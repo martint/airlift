@@ -35,7 +35,6 @@ import org.eclipse.jetty.client.api.Response.Listener;
 import org.eclipse.jetty.client.api.Result;
 import org.eclipse.jetty.client.http.HttpClientTransportOverHTTP;
 import org.eclipse.jetty.client.http.HttpConnectionOverHTTP;
-import org.eclipse.jetty.client.util.BytesContentProvider;
 import org.eclipse.jetty.client.util.InputStreamResponseListener;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
@@ -83,6 +82,8 @@ import static java.util.concurrent.TimeUnit.NANOSECONDS;
 public class JettyHttpClient
         implements io.airlift.http.client.HttpClient
 {
+    private static final Logger LOG = Logger.get(JettyHttpClient.class);
+
     private static final AtomicLong nameCounter = new AtomicLong();
     private static final String PRESTO_STATS_KEY = "presto_stats";
     private static final long SWEEP_PERIOD_MILLIS = 5000;
@@ -384,7 +385,23 @@ public class JettyHttpClient
         if (bodyGenerator != null) {
             if (bodyGenerator instanceof StaticBodyGenerator) {
                 StaticBodyGenerator staticBodyGenerator = (StaticBodyGenerator) bodyGenerator;
-                jettyRequest.content(new BytesContentProvider(staticBodyGenerator.getBody()));
+                SingleBufferContent content = new SingleBufferContent(staticBodyGenerator.getBody());
+                jettyRequest.content(content);
+                jettyRequest.onRequestFailure((request, failure) -> {
+                    List<ByteBuffer> buffers = content.getBuffers();
+                    if (!buffers.isEmpty()) {
+                        synchronized (JettyHttpClient.this) {
+                            LOG.info("===========================");
+                            LOG.info("%s %s failed: %s", jettyRequest.getMethod(), jettyRequest.getURI(), failure.getMessage());
+
+                            LOG.info(httpClient.dump());
+                            for (ByteBuffer buffer : buffers) {
+                                LOG.info("%s %s, total: %s, remaining: %s", jettyRequest.getMethod(), jettyRequest.getURI(), content.getLength(), buffer.remaining());
+                            }
+                            LOG.info("===========================");
+                        }
+                    }
+                });
             }
             else {
                 jettyRequest.content(new BodyGeneratorContentProvider(bodyGenerator, httpClient.getExecutor()));
